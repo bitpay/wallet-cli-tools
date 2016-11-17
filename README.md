@@ -20,7 +20,7 @@ npm install
 
 * nodeJS >= 4.x
 
-## Useage 
+## Usage 
 
 Coming soon
  
