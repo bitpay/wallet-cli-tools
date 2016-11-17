@@ -1,0 +1,304 @@
+#!/usr/bin/env node
+
+'use strict';
+
+process.title = 'wallet';
+
+var crypto = require('crypto');
+
+var assert = require('assert');
+var bitcore = require('bitcore-lib');
+var program = require('commander');
+
+var version = require('../package.json').version;
+var ClientConfig  = require('../lib/client/config');
+var utils = require('../lib/utils');
+var validators = require('../lib/validators');
+
+program
+  .version(version)
+  .description('Bitcoin Wallet CLI')
+  .option('-c, --config <dir>', 'Specify the data directory that has the configuration file.')
+  .option('-t, --testnet', 'Use testnet network')
+  .option('-r, --regtest', 'Use regtest network')
+  .parse(process.argv);
+
+var network;
+if (program.testnet) {
+  network = 'testnet';
+} else if (program.regtest) {
+  network = 'regtest';
+}
+
+var config = new ClientConfig({
+  path: program.config,
+  network: network
+});
+
+config.setup(function(err) {
+  if (err) {
+    throw err;
+  }
+  program
+    .command('generateKey')
+    .description('Generate a key pair')
+    .action(function() {
+
+      function finish() {
+        var secret = crypto.randomBytes(32);
+        var publicKey = bitcore.PrivateKey.fromObject({
+          bn: secret,
+          compressed: true,
+          network: config.network
+        }).toPublicKey().toBuffer().toString('hex');
+
+        utils.encryptSecretWithPassphrase(secret, function(err, cipherText, salt) {
+          if (err) {
+            throw err;
+          }
+          config.writeApiKey(cipherText, publicKey, salt, function(err) {
+            if (err) {
+              throw err;
+            }
+            console.log('Public key: ' + publicKey);
+            console.log('Encrypted key written to ' + config.getConfigFilePath());
+          });
+        });
+      }
+
+      if (config.data.apiKey) {
+        utils.confirm('Api Key exists, confirm overwrite?', function(err, answer) {
+          if (err) {
+            throw err;
+          }
+          if (answer) {
+            finish();
+          }
+        });
+      } else {
+        finish();
+      }
+
+    });
+
+  program
+    .command('createWallet <walletName>')
+    .description('Create a new wallet')
+    .action(config.unlockClientThrough(function(client, walletName) {
+      var walletId = utils.getWalletIdFromName(walletName);
+
+      client.createWallet(walletId, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(body);
+      });
+    }));
+
+  program
+    .command('getBalance <walletName>')
+    .description('Get the balance of the wallet')
+    .action(config.unlockClientThrough(function(client, walletName) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      client.getBalance(walletId, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(body);
+      });
+    }));
+
+  program
+    .command('importAddress <walletName> <address>')
+    .description('Import a new address')
+    .action(config.unlockClientThrough(function(client, walletName, address) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      client.importAddress(walletId, address, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(body);
+      });
+    }));
+
+  program
+    .command('importAddresses <walletName> <filepath>')
+    .description('Import new addresses from a JSON or Bitcoin wallet.dat file')
+    .action(config.unlockClientThrough(function(client, walletName, filepath) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      utils.readWalletFile(filepath, config.getNetworkName(), function(err, addresses) {
+        if (err) {
+          throw err;
+        }
+        client.importAddresses(walletId, filepath, function(err) {
+          if (err) {
+            throw err;
+          }
+          console.log('Submitted job to import ' + addresses.length + ' addresses.');
+        });
+      });
+    }));
+
+  program
+    .command('getTransactions <walletName> [start] [limit]')
+    .description('View latest transactions for a wallet')
+    .action(config.unlockClientThrough(function(client, walletName, start, limit) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {};
+      if (start) {
+        options.height = start;
+        options.index = 0;
+      }
+      if (limit) {
+        options.limit = limit;
+      }
+      client.getTransactions(walletId, options, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(JSON.stringify(body, null, 2));
+      });
+    }));
+
+  program
+    .command('getUTXOs <walletName>')
+    .description('View utxos for a wallet')
+    .action(config.unlockClientThrough(function(client, walletName) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {};
+      client.getUTXOs(walletId, options, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(JSON.stringify(body, null, 2));
+      });
+    }));
+
+  program
+    .command('getTransactionsStream <walletId> [start]')
+    .description('View continuous stream of latest transactions for a wallet')
+    .action(config.unlockClientThrough(function(client, walletName, start) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {};
+      if (start) {
+        options.height = start;
+        options.index = 0;
+      }
+      options.limit = 50;
+      var stream = client.getTransactionsStream(walletId, options);
+      stream.on('data', function(transactions) {
+        console.log(transactions);
+      });
+    }));
+
+  program
+    .command('getTransactionsCSV <walletName> <start> <end>')
+    .description('View transaction CSV history for block range, e.g. 1000 0')
+    .action(config.unlockClientThrough(function(client, walletName, start, end) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {
+        height: start,
+        index: 0,
+        limit: 10,
+        end: end
+      };
+      var stream = client.getTransactionsCSVStream(walletId, options);
+      stream.pipe(process.stdout);
+    }));
+
+  program
+    .command('getTransactionsList <walletName> <startDate> <endDate>')
+    .description('View transaction list history for time range, e.g. 2016-01-01 2015-01-01. ' +
+    'Date order is not important. The lastest date is exclusive and the earliest date is inclusive.')
+    .action(validators.checkDateFunction(function(err) {
+      if(err) {
+        for (var i = 0; i < err.length; i++) {
+          console.log(err[i]);
+        }
+        throw 'Errors reported';
+      }
+    }))
+    .action(config.unlockClientThrough(function(client, walletName, start, end) {
+      var options = {
+        startdate: start,
+        index: 0,
+        limit: 10,
+        enddate: end
+      };
+      client.getHeightsFromTimestamps(options, function(err, response, body) {
+        if(err) {
+          throw err;
+        }
+        var startHeight = body.result[0];
+        var endHeight = body.result[1];
+        assert(startHeight < endHeight, 'Starting block height must be less than ending ' +
+          'block height. The dates provided translated to block heights that appear to be incorrect. ' + 
+          'Please ensure \'timestampindex\' is enabled in bitcoin.conf.');
+        var walletId = utils.getWalletIdFromName(walletName);
+        options = {
+          height: startHeight,
+          index: 0,
+          limit: 10,
+          end: endHeight 
+        };
+        var stream = client.getTransactionsListStream(walletId, options);
+        stream.pipe(process.stdout);
+      });
+    }));
+
+  program
+    .command('getTxids <walletName> [start] [limit]')
+    .description('View latest txids for a wallet')
+    .action(config.unlockClientThrough(function(client, walletName, start, limit) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {};
+      if (start) {
+        options.height = start;
+        options.index = 0;
+      }
+      if (limit) {
+        options.limit = limit;
+      }
+      client.getTxids(walletId, options, function(err, res, body) {
+        if (err) {
+          throw err;
+        }
+        console.log(body);
+      });
+    }));
+
+  program
+    .command('getTxidsStream <walletName> [start]')
+    .description('View continuous stream of latest txids for a wallet')
+    .action(config.unlockClientThrough(function(client, walletName, start) {
+      var walletId = utils.getWalletIdFromName(walletName);
+      var options = {};
+      if (start) {
+        options.height = start;
+        options.index = 0;
+      }
+      options.limit = 500;
+      var stream = client.getTxidsStream(walletId, options);
+      stream.on('data', function(txids) {
+        console.log(txids);
+      });
+    }));
+
+  program
+    .command('*', false, {noHelp: true})
+    .action(function(cmd) {
+      console.log('"' + cmd + '" is not a wallet command. Run "wallet" for list of commands.');
+    });
+
+  program
+    .command('help', false, {noHelp: true})
+    .action(function() {
+      program.outputHelp();
+    });
+
+  program.parse(process.argv);
+
+  if (process.argv.length === 2) {
+    program.help();
+  }
+});
