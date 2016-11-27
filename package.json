@@ -30,6 +30,7 @@
   "homepage": "https://github.com/bitpay/wallet-cli-tools#readme",
   "dependencies": {
     "async": "^2.0.0",
+    "bitcoin-wallet-node": "kleetus/bitcoin-wallet-node",
     "bitcoind-rpc": "^0.7.0",
     "bitcore-lib": "^0.13.19",
     "bloom-filter": "^0.2.0",

@@ -1,0 +1,28 @@
+#!/usr/bin/env node
+var readline = require('readline');
+var bitcore = require('bitcore-lib');
+var livenet = bitcore.Networks.livenet;
+
+var readline = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+    terminal: false
+});
+
+readline.on('line', function(line){
+  var key;
+  var recordPubkey;
+  try {
+    key = JSON.parse(line);
+  } catch(e) {
+    process.stdout.write('Unable to parse this record: "' + line.toString() + '".' + '\n');
+    return;
+  }
+  try {
+    recordPubkey = new bitcore.PublicKey(key.pubKey);
+  } catch(e) {
+    process.stdout.write('ERROR: invalid public key in json export: ' + key.pubKey + '\n');
+    return;
+  }
+  process.stdout.write(recordPubkey.toAddress().toString() + '\n');
+});

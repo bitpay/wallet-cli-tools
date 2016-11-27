@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+var async = require('async');
+var bitcore = require('bitcore-lib');
+var fs = require('fs');
+var utils = require('../lib/utils');
+var EventEmitter = require('events').EventEmitter;
+var emitter = new EventEmitter();
+var secret;
+
+fs.exists(utils.expandTilde(process.argv[2]), function(exists) {
+  if(!exists) {
+    console.log('Usage: wallet-key-exporter [wallet file]');
+    process.exit(1);
+  }
+  var exporter = require('bitcoin-wallet-node');
+  exporter.stream({
+    filePath: process.argv[2],
+    emitter: emitter
+  });
+  emitter.on('data', function(value) {
+    var key;
+    try {
+      var key = JSON.parse(value);
+    } catch(e) {
+      throw 'Unable to parse this record: "' + line.toString() + '".';
+    }
+    if (key.salt && key.derivationMethod && key.rounds) {
+      key.salt = new Buffer(key.salt, 'hex');
+      unlockMasterKey(key, function(err, result) {
+        if(err) {
+          throw 'Could not decrypt master key, here is the error from the decryption attempt: "' +
+            err + '".';
+        }
+        secret = result;
+        exporter.resume();
+      });
+    } else {
+      utils.decrypt({
+        key: secret,
+        cipherText: key.cipherText,
+        iv: bitcore.crypto.Hash.sha256sha256(new Buffer(key.pubKey, 'hex'))
+      }, function(err, result) {
+        if(err) {
+          return process.stderr.write(err + '\n');
+        }
+        process.stdout.write(JSON.stringify({
+          key: result,
+          pubKey: key.pubKey
+        }) + '\n');
+      });
+    }
+  });
+  exporter.pause();
+  exporter.start();
+});
+
+function unlockMasterKey(masterKey, callback) {
+  async.retry(3, function(next) {
+    utils.getPassphrase(function(err, passphrase) {
+      utils.decryptSecret({
+        cipherText: masterKey.cipherText,
+        salt: masterKey.salt,
+        derivationOptions: {
+          method: 0,
+          rounds: masterKey.rounds
+        },
+        passphrase: passphrase
+      }, function(err, secret) {
+        if (err) {
+          return next(err);
+        }
+        next(null, secret);
+      });
+    });
+  }, callback);
+}
